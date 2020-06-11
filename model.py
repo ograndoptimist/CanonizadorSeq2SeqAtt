@@ -1,9 +1,12 @@
+import math
+
 import torch
 import torch.cuda
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.utils.rnn import (pack_padded_sequence, pad_packed_sequence)
+from torch.utils.data import Dataset
 
 
 def padding_tensor(sequences, null_id):
@@ -15,6 +18,21 @@ def padding_tensor(sequences, null_id):
         length = tensor.size(0)
         out_tensor[i, :length] = tensor
     return out_tensor
+
+
+def collate_fn_padd(batch):
+    input_ = []
+    output_ = []        
+    for item in batch:
+        input_.append(torch.Tensor(item['input']))
+        output_.append(torch.Tensor(item['output']))
+    
+    batch_input = padding_tensor(input_, batch[0]['null_input'])
+    batch_output = padding_tensor(output_, batch[0]['null_output'])
+    
+    batch = {'input': batch_input.long(), 'output': batch_output.long()}
+    
+    return batch
 
 
 def sort_for_rnn(x, null):
@@ -31,12 +49,12 @@ def sort_for_rnn(x, null):
 class NLPDataset(Dataset):
     def __init__(self,
                  data,
-                 null_input_token
-                 null_output_token):
+                 input_tokenizer,
+                 output_tokenizer):
         self.data = data
         self.data.index = range(len(data))
-        self.input = null_input_token
-        self.output = null_output_token
+        self.input_tokenizer = input_tokenizer
+        self.output_tokenizer = output_tokenizer        
         
     def __len__(self):
         return len(self.data)
@@ -48,13 +66,13 @@ class NLPDataset(Dataset):
         input_data = self.data.loc[idx, 'query_string']
         output_data = self.data.loc[idx, 'output']
         
-        x = [torch.tensor(row.ids) for row in input_tokenizer.encode_batch(input_data)]
-        y = [torch.tensor(row.ids) for row in output_tokenizer.encode_batch(output_data)]
+        x = self.input_tokenizer.encode(input_data).ids
+        y = self.output_tokenizer.encode(output_data).ids
         
-        x = padding_tensor(x, self.input)
-        y = padding_tensor(y, self.output)
+        null_input = self.input_tokenizer.get_vocab()['<pad>']
+        null_output = self.output_tokenizer.get_vocab()['<pad>']
         
-        sample = {'input': input_data, 'output': output_data}
+        sample = {'input': x, 'output': y, 'null_input': null_input, 'null_output':null_output}
 
         return sample
 
@@ -191,7 +209,7 @@ class Seq2SeqAtt(nn.Module):
         decoder_hidden = encoder_hidden
         sampled_output = [self.START]
         for t in range(max_length):
-            decoder_input = Variable(torch.cuda.LongTensor([sampled_output[-1]]))
+            decoder_input = Variable(torch.LongTensor([sampled_output[-1]]))
             decoder_out, decoder_hidden = self.decoder(
                 decoder_input, encoder_outputs, decoder_hidden)
             _, argmax = decoder_out.data.max(1)
